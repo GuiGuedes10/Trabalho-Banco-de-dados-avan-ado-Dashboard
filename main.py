@@ -28,6 +28,12 @@ LAYOUT_BASE = dict(
 
 def load_data():
     df = pd.read_csv(CSV_PATH)
+    if "is_free" in df.columns:
+        df = df[
+            ~df["is_free"].apply(
+                lambda v: v is True or str(v).strip().lower() in ("true", "1", "yes")
+            )
+        ].copy()
     df["estimated_downloads"] = (
         df["estimated_downloads_base"].fillna(0)
         + df["estimated_downloads_dlc"].fillna(0)
