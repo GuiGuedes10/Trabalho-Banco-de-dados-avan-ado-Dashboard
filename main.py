@@ -23,7 +23,7 @@ DASH_REFRESH_MS = int(os.getenv("DASH_REFRESH_MS", "5000"))
 
 _fetch_thread = None
 
-CSV_PATH = DETAILS_CSV
+CSV_PATH = "database/data/steam_app_details.csv"
 TOP_N = 10
 CHART_H = 340
 
@@ -59,7 +59,20 @@ def safe_load_data():
 
 def load_data():
     df = pd.read_csv(CSV_PATH)
-    return prepare_dashboard_dataframe(df)
+    if "is_free" in df.columns:
+        df = df[
+            ~df["is_free"].apply(
+                lambda v: v is True or str(v).strip().lower() in ("true", "1", "yes")
+            )
+        ].copy()
+    df["estimated_downloads"] = (
+        df["estimated_downloads_base"].fillna(0) + df["estimated_downloads_dlc"].fillna(0)
+    )
+    df["estimated_income"] = df["estimated_income"].fillna(0)
+    df["price_brl"] = df["price_overview.final"].fillna(0) / 100
+    df["name_short"] = df["name"].astype(str).str.slice(0, 28)
+    df["has_dlc"] = df["estimated_downloads_dlc"].fillna(0) > 0
+    return df
 
 
 def fmt_compact(value):
@@ -439,36 +452,6 @@ def chart_download_tiers(df):
     )
     return fig
 
-
-def chart_reviews_efficiency(df):
-    plot = df[(df["total_reviews"] > 0) & (df["estimated_downloads_base"] > 0)].copy()
-    if plot.empty:
-        return _empty_chart("Downloads por review (eficiência estimada)")
-    plot["downloads_per_review"] = plot["estimated_downloads_base"] / plot["total_reviews"]
-    fig = px.scatter(
-        plot,
-        x="total_reviews",
-        y="downloads_per_review",
-        size="price_brl",
-        size_max=22,
-        opacity=0.65,
-        color_discrete_sequence=[THEME["accent"]],
-        hover_name="name",
-        labels={
-            "total_reviews": "Reviews",
-            "downloads_per_review": "Downloads / review",
-        },
-    )
-    fig.update_layout(
-        **CHART_LAYOUT,
-        title=dict(text="Downloads por review (eficiência estimada)", x=0, font=dict(size=14)),
-        xaxis=dict(type="log", gridcolor=THEME["border"]),
-        yaxis=dict(gridcolor=THEME["border"]),
-    )
-    fig.update_traces(marker=dict(line=dict(width=0)))
-    return fig
-
-
 def _genre_labels_from_cell(value):
     if pd.isna(value) or not str(value).strip():
         return []
@@ -611,18 +594,10 @@ def build_dashboard_body(df):
                                 config=graph_cfg,
                             ),
                             dcc.Graph(
-                                figure=chart_reviews_efficiency(df),
+                                figure=chart_top_genres(df),
                                 config=graph_cfg,
                             ),
                         ],
-                    ),
-                    html.P(
-                        "Quantidade de jogos por gênero (um título pode contar em mais de um).",
-                        className="section-desc",
-                    ),
-                    dcc.Graph(
-                        figure=chart_top_genres(df),
-                        config=graph_cfg,
                     ),
                 ],
             ),
