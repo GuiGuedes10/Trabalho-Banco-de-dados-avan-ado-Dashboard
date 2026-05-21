@@ -1,2 +1,2 @@
 .env
-*.csv
+database/data/steam_app_details.csv
