@@ -143,7 +143,7 @@ def kpi_row(kpis):
         ("Downloads estimados", fmt_compact(kpis["downloads_total"]), "Base + DLC"),
         ("Receita estimada", fmt_brl(kpis["income_total"]), "Downloads × preço efetivo"),
         ("Reviews na Steam", fmt_compact(kpis["reviews_total"]), "Soma do catálogo"),
-        ("Preço médio", fmt_brl(kpis["avg_price"]) if pd.notna(kpis["avg_price"]) else "—", "Loja BR"),
+        ("Ganhos da Steam", fmt_brl(kpis["income_total"] * 0.3), "Receita gerada para a Steam"),
         ("Com DLC ativo", f"{kpis['with_dlc']:,}", f"{100 * kpis['with_dlc'] / max(kpis['games'], 1):.0f}% do catálogo"),
     ]
     return html.Div(
