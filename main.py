@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import threading
 
 from dash import Dash, Input, Output, dcc, html
+from database.dataTratament import DETAILS_CSV, prepare_dashboard_dataframe
 from database.getData import getAppDetails
 from dotenv import load_dotenv
 
@@ -22,7 +23,7 @@ DASH_REFRESH_MS = int(os.getenv("DASH_REFRESH_MS", "5000"))
 
 _fetch_thread = None
 
-CSV_PATH = "database/data/steam_app_details.csv"
+CSV_PATH = DETAILS_CSV
 TOP_N = 10
 CHART_H = 340
 
@@ -58,20 +59,7 @@ def safe_load_data():
 
 def load_data():
     df = pd.read_csv(CSV_PATH)
-    if "is_free" in df.columns:
-        df = df[
-            ~df["is_free"].apply(
-                lambda v: v is True or str(v).strip().lower() in ("true", "1", "yes")
-            )
-        ].copy()
-    df["estimated_downloads"] = (
-        df["estimated_downloads_base"].fillna(0) + df["estimated_downloads_dlc"].fillna(0)
-    )
-    df["estimated_income"] = df["estimated_income"].fillna(0)
-    df["price_brl"] = df["price_overview.final"].fillna(0) / 100
-    df["name_short"] = df["name"].astype(str).str.slice(0, 28)
-    df["has_dlc"] = df["estimated_downloads_dlc"].fillna(0) > 0
-    return df
+    return prepare_dashboard_dataframe(df)
 
 
 def fmt_compact(value):

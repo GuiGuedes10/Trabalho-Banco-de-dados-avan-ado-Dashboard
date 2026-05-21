@@ -1,23 +1,25 @@
-import math
 import os
 import time
-from dotenv import load_dotenv
-import requests
+
 import pandas as pd
-from datetime import datetime
+import requests
+from dotenv import load_dotenv
+
+from database.dataTratament import (
+    DETAILS_CSV,
+    append_game_to_csv,
+    enrich_game_with_insights,
+    load_existing_details,
+)
 
 load_dotenv()
 
 STEAM_API_KEY = os.getenv("STEAM_API_KEY")
-MAX_RESULTS = 20000
+MAX_RESULTS = int(os.getenv("MAX_RESULTS", "20000"))
 
-# Intervalo mínimo entre requisições bem-sucedidas (segundos).
 REQUEST_DELAY = float(os.getenv("STEAM_REQUEST_DELAY", "0.5"))
-# Tentativas por appid quando receber 429 ou erro transitório.
 MAX_RETRIES = int(os.getenv("STEAM_MAX_RETRIES", "8"))
-# Espera padrão se o servidor não enviar Retry-After (segundos).
 DEFAULT_RATE_LIMIT_WAIT = int(os.getenv("STEAM_RATE_LIMIT_WAIT", "60"))
-
 RATE_LIMIT = int(os.getenv("RATE_LIMIT", "100"))
 
 SESSION_HEADERS = {
@@ -25,35 +27,14 @@ SESSION_HEADERS = {
     "Accept": "application/json",
 }
 
-url_getID = f"https://api.steampowered.com/IStoreService/GetAppList/v1/?key={STEAM_API_KEY}&include_games=true&max_results={MAX_RESULTS}"
+DATA_DIR = "database/data"
+APP_LIST_CSV = f"{DATA_DIR}/steam_app_list.csv"
 
-COLUMNS = [
-    "steam_appid",
-    "name",
-    "type",
-    "is_free",
-    "about_the_game",
-    "header_image",
-    "dlc",
-    "developers",
-    "publishers",
-    "genres",
-    "categories",
-    "price_overview.final",
-    "price_overview.currency",
-    "platforms.windows",
-    "platforms.mac",
-    "platforms.linux",
-    "metacritic.score",
-    "total_reviews",
-    "dlc_reviews",
-    "estimated_downloads_base",
-    "estimated_downloads_dlc",
-    "estimated_players_dont_have_dlc",
-    "estimated_income",
-    "community_review_factor",
-    "release_date.date",
-]
+URL_GET_APP_LIST = (
+    f"https://api.steampowered.com/IStoreService/GetAppList/v1/"
+    f"?key={STEAM_API_KEY}&include_games=true&max_results={MAX_RESULTS}"
+)
+
 
 def _retry_after_seconds(response):
     raw = response.headers.get("Retry-After", "")
@@ -61,188 +42,14 @@ def _retry_after_seconds(response):
         return max(int(raw), 1)
     return DEFAULT_RATE_LIMIT_WAIT
 
-_RELEASE_DATE_FORMATS = ("%d %b, %Y", "%d %B, %Y", "%b %d, %Y", "%B %d, %Y")
-_DEFAULT_RELEASE_DATE = datetime(2020, 1, 1)
-
-_MAJOR_SALES_PER_YEAR = 4
-_SEASONAL_PROFILE = {
-    "new": {"discount": 0.15, "sale_share": 0.22},
-    "medium": {"discount": 0.62, "sale_share": 0.50},
-    "mature": {"discount": 0.72, "sale_share": 0.60},
-    "classic": {"discount": 0.90, "sale_share": 0.78},
-}
-
-
-def _parse_release_date(game):
-    release = game.get("release_date") or {}
-    date_str = (release.get("date") or "").strip()
-    if not date_str or date_str.lower() in ("coming soon", "tbd", "to be announced"):
-        return _DEFAULT_RELEASE_DATE
-    for fmt in _RELEASE_DATE_FORMATS:
-        try:
-            return datetime.strptime(date_str, fmt)
-        except ValueError:
-            continue
-    return _DEFAULT_RELEASE_DATE
-
 
 def _is_free_to_play(game_data):
     return game_data.get("is_free") is True
 
 
 def _is_brl_catalog(game_data):
-    """Somente catálogo pago em BRL (F2P já filtrados antes)."""
     currency = (game_data.get("price_overview") or {}).get("currency")
     return currency == "BRL"
-
-
-def _price_final(game):
-    overview = game.get("price_overview") or {}
-    initial_cents = overview.get("initial")
-    final_cents = overview.get("final")
-    if initial_cents is None and final_cents is None:
-        return 0.0
-
-    initial = float(initial_cents or final_cents) / 100.0
-    current = float(final_cents or initial_cents) / 100.0
-
-    release_date = _parse_release_date(game)
-    market = _market_tier(release_date)
-    years = _years_on_store(release_date)
-    profile = _SEASONAL_PROFILE[market]
-
-    sale_cycles = years * _MAJOR_SALES_PER_YEAR
-    sale_share = min(
-        0.88,
-        profile["sale_share"] + sale_cycles * 0.008,
-    )
-    sale_price = initial * (1.0 - profile["discount"])
-    effective = (1.0 - sale_share) * initial + sale_share * sale_price
-
-    discount_pct = overview.get("discount_percent") or 0
-    if discount_pct > 0 and initial > 0:
-        recent_weight = min(0.25, 0.08 + sale_share * 0.15)
-        effective = (1.0 - recent_weight) * effective + recent_weight * current
-
-    return round(effective, 2)
-
-
-def _review_tier(review_count):
-    if review_count <= 1000:
-        return "indie"
-    if review_count <= 5000:
-        return "AA"
-    if review_count >= 1000000:
-        return "public_success"
-    return "AAA"
-
-
-def _years_on_store(release_date):
-    today = datetime.now()
-    years = today.year - release_date.year
-    if (today.month, today.day) < (release_date.month, release_date.day):
-        years -= 1
-    return max(0, years)
-
-
-def _market_tier(release_date):
-    years = _years_on_store(release_date)
-    if years < 3:
-        return "new"
-    if years < 7:
-        return "medium"
-    if years < 10:
-        return "mature"
-    return "classic"
-
-
-def _community_review_factor(review_count):
-    if review_count <= 0:
-        return 1.0
-    if review_count < 300_000:
-        return 1.0
-    return max(0.55, 1.0 - math.log10(review_count / 300_000) * 0.35)
-
-
-def multiplier_base(review_count, release_date):
-    tier = _review_tier(review_count)
-    market = _market_tier(release_date)
-
-    match (market, tier):
-        # Lançamentos / novos (< 3 anos na loja)
-        case ("new", "indie"):
-            return 15
-        case ("new", "AA"):
-            return 22
-        case ("new", "AAA"):
-            return 28
-        case ("new", "public_success"):
-            return 20
-        # Jogos médios (3–6 anos — muitas promoções 50–75%)
-        case ("medium", "indie"):
-            return 30
-        case ("medium", "AA"):
-            return 38
-        case ("medium", "AAA"):
-            return 45
-        case ("medium", "public_success"):
-            return 24
-        # 7–9 anos (entre médio e clássico)
-        case ("mature", "indie"):
-            return 38
-        case ("mature", "AA"):
-            return 46
-        case ("mature", "AAA"):
-            return 52
-        case ("mature", "public_success"):
-            return 26
-        # Clássicos (10+ anos — descontos ~90% repetidos)
-        case ("classic", "indie"):
-            return 45
-        case ("classic", "AA"):
-            return 55
-        case ("classic", "AAA"):
-            return 62
-        case ("classic", "public_success"):
-            return 27
-        case _:
-            return 28
-
-
-def multiplier_dlc(dlc_reviews, release_date):
-    return int(multiplier_base(dlc_reviews, release_date) * 1.5)
-
-
-def _tiered_downloads(review_count, release_date, mult_fn):
-    if review_count <= 0:
-        return 0
-    if review_count <= 1000:
-        return review_count * mult_fn(review_count, release_date)
-    if review_count <= 5000:
-        return (
-            1000 * mult_fn(1000, release_date)
-            + (review_count - 1000) * mult_fn(review_count, release_date)
-        )
-    return (
-        1000 * mult_fn(1000, release_date)
-        + 4000 * mult_fn(5000, release_date)
-        + (review_count - 5000) * mult_fn(review_count, release_date)
-    )
-
-
-def estimate_downloads(total_reviews, dlc_reviews, release_date):
-    community_factor = _community_review_factor(total_reviews)
-    download_base = int(
-        _tiered_downloads(total_reviews, release_date, multiplier_base) * community_factor
-    )
-    if dlc_reviews > 0:
-        dlc_factor = _community_review_factor(dlc_reviews)
-        download_dlc = int(
-            _tiered_downloads(dlc_reviews, release_date, multiplier_dlc) * dlc_factor
-        )
-    else:
-        download_dlc = 0
-    return download_base, download_dlc, community_factor
 
 
 def get_dlc_reviews(session, dlc_app_id):
@@ -368,79 +175,42 @@ def fetch_appdetails(session, app_id):
     return None
 
 
-def _purge_f2p_from_df(df):
-    if df is None or df.empty or "is_free" not in df.columns:
-        return df, 0
-    is_f2p = df["is_free"].apply(
-        lambda v: v is True or str(v).strip().lower() in ("true", "1", "yes")
-    )
-    removed = int(is_f2p.sum())
-    if removed:
-        df = df[~is_f2p].copy()
-    return df, removed
-
-
-def _load_existing_details(out_path):
-    if not os.path.exists(out_path):
-        return None, set()
-    try:
-        existing_df = pd.read_csv(out_path)
-        if existing_df.empty:
-            return None, set()
-        existing_df, removed = _purge_f2p_from_df(existing_df)
-        if removed:
-            existing_df.to_csv(out_path, index=False)
-            print(f"Removidos {removed} jogos F2P do CSV existente.")
-        done = set(existing_df["steam_appid"].astype(int).tolist())
-        return existing_df, done
-    except (ValueError, KeyError, pd.errors.EmptyDataError):
-        return None, set()
-
-
-def _append_game_to_csv(game, out_path, existing_df):
-    new_row = pd.json_normalize([game])
-    if existing_df is not None and not existing_df.empty:
-        detail_df = pd.concat([existing_df, new_row], ignore_index=True)
-    else:
-        detail_df = new_row
-
-    detail_df = detail_df.drop_duplicates(subset=["steam_appid"], keep="last")
-    cols = [c for c in COLUMNS if c in detail_df.columns]
-    detail_df = detail_df.reindex(columns=cols)
-    detail_df.to_csv(out_path, index=False)
-    return detail_df
-
-
 def getIDs():
+    os.makedirs(DATA_DIR, exist_ok=True)
     try:
-        response = requests.get(url_getID, timeout=60)
+        response = requests.get(URL_GET_APP_LIST, timeout=60)
         data = response.json()
         df = pd.DataFrame(data["response"]["apps"])
-        df.to_csv("database/data/steam_app_list.csv", index=False)
+        df.to_csv(APP_LIST_CSV, index=False)
         print("Data saved to steam_app_list.csv")
         return df
     except Exception as e:
         print(f"Error: {e}")
         return None
 
-def getAppDetails(limit=None, skip_existing=True):
-    csv_path = "database/data/steam_app_list.csv"
-    out_path = "database/data/steam_app_details.csv"
 
-    if not os.path.exists(csv_path):
-        print(f"File not found: {csv_path}.")
+def getAppDetails(limit=None, skip_existing=True):
+    out_path = DETAILS_CSV
+
+    if not os.path.exists(APP_LIST_CSV):
+        print(f"Arquivo não encontrado: {APP_LIST_CSV}. Baixando lista de apps...")
+        os.makedirs(DATA_DIR, exist_ok=True)
+        getIDs()
+
+    if not os.path.exists(APP_LIST_CSV):
+        print(f"Não foi possível obter {APP_LIST_CSV}.")
         return
 
-    df_list = pd.read_csv(csv_path)
+    df_list = pd.read_csv(APP_LIST_CSV)
     ids = df_list["appid"].tolist()
     if limit is not None:
         ids = ids[: int(limit)]
 
-    os.makedirs("database/data", exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     existing_df, done_ids = (None, set())
     if skip_existing:
-        existing_df, done_ids = _load_existing_details(out_path)
+        existing_df, done_ids = load_existing_details(out_path)
         if done_ids:
             print(f"Retomando: {len(done_ids)} jogos já salvos em {out_path}")
 
@@ -466,22 +236,9 @@ def getAppDetails(limit=None, skip_existing=True):
             time.sleep(REQUEST_DELAY)
             continue
 
-        game, total_reviews, dlc_reviews = result
-        game["total_reviews"] = total_reviews
-        game["dlc_reviews"] = dlc_reviews
-
-        release_date = _parse_release_date(game)
-        download_base, download_dlc, community_factor = estimate_downloads(
-            total_reviews, dlc_reviews, release_date
-        )
-        game["estimated_downloads_base"] = download_base
-        game["estimated_downloads_dlc"] = download_dlc
-        game["estimated_players_dont_have_dlc"] = download_base - download_dlc
-        game["community_review_factor"] = round(community_factor, 4)
-
-        game["estimated_income"] = download_base * _price_final(game)
-
-        existing_df = _append_game_to_csv(game, out_path, existing_df)
+        game_data, total_reviews, dlc_reviews = result
+        game = enrich_game_with_insights(game_data, total_reviews, dlc_reviews)
+        existing_df = append_game_to_csv(game, out_path, existing_df)
         fetched += 1
 
         if idx % 10 == 0 or idx == len(pending):
@@ -494,7 +251,7 @@ def getAppDetails(limit=None, skip_existing=True):
         return
 
     print(f"Salvo {out_path} ({len(existing_df)} apps no total)")
-        
+
 
 if __name__ == "__main__":
     getAppDetails(RATE_LIMIT)
