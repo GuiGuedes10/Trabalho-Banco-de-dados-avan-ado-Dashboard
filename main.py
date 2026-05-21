@@ -21,6 +21,10 @@ FETCH_ON_START = os.getenv("FETCH_ON_START", "true").strip().lower() in (
 )
 DASH_REFRESH_MS = int(os.getenv("DASH_REFRESH_MS", "5000"))
 
+STEAM_STORE_BASE_URL = "https://store.steampowered.com/app/"
+METACRITIC_BASE_URL = "https://www.metacritic.com/game/"
+STEAMDB_BASE_URL = "https://steamdb.info/app/"
+
 _fetch_thread = None
 
 CSV_PATH = "database/data/steam_app_details.csv"
@@ -140,8 +144,8 @@ def compute_kpis(df):
 def kpi_row(kpis):
     cards = [
         ("Jogos analisados", f"{kpis['games']:,}", "Catálogo pago · BRL"),
-        ("Downloads estimados", fmt_compact(kpis["downloads_total"]), "Base + DLC"),
-        ("Receita estimada", fmt_brl(kpis["income_total"]), "Downloads × preço efetivo"),
+        ("Vendas estimadas", fmt_compact(kpis["downloads_total"]), "Base + DLC"),
+        ("Receita estimada", fmt_brl(kpis["income_total"]), "Vendas × preço efetivo"),
         ("Reviews na Steam", fmt_compact(kpis["reviews_total"]), "Soma do catálogo"),
         ("Ganhos da Steam", fmt_brl(kpis["income_total"] * 0.3), "Receita gerada para a Steam"),
         ("Com DLC ativo", f"{kpis['with_dlc']:,}", f"{100 * kpis['with_dlc'] / max(kpis['games'], 1):.0f}% do catálogo"),
@@ -191,7 +195,7 @@ def highlight_strip(kpis):
             _highlight_card(
                 "Maior alcance",
                 kpis["top_downloads_name"],
-                fmt_compact(kpis["top_downloads_val"]) + " downloads est.",
+                fmt_compact(kpis["top_downloads_val"]) + " Vendas estimadas.",
                 kpis.get("top_downloads_img"),
             ),
             _highlight_card(
@@ -212,18 +216,26 @@ def _game_card(row, rank_label):
         if _valid_header_image(img_url)
         else html.Div(className="game-card-img-placeholder", children="—")
     )
-    return html.Div(
+    return html.A(
+        href=f"{STEAM_STORE_BASE_URL}{row['steam_appid']}/{row['name'].replace(' ', '_')}",
+        target="_blank",
+        rel="noopener noreferrer",
         className="game-card",
         children=[
             html.Span(rank_label, className="game-card-rank"),
             img,
             html.Div(
-                className="game-card-info",
+                className="game-card-info ",
                 children=[
                     html.Strong(row["name_short"], className="game-card-title"),
-                    html.Span(
-                        fmt_compact(row["estimated_downloads"]) + " dl",
-                        className="game-card-stat",
+                    html.A(
+                        href=f"{STEAMDB_BASE_URL}{row['steam_appid']}/charts",
+                        target="_blank",
+                        rel="noopener noreferrer",
+                        children=[
+                            fmt_compact(row["estimated_downloads"]) + " vendas estimadas.",
+                        ],
+                        className="game-card-stat game-card-sales",
                     ),
                     html.Span(
                         fmt_brl(row["estimated_income"]) if row["estimated_income"] > 0 else "—",
@@ -277,15 +289,22 @@ def _metacritic_card(row, rank_label):
         else html.Div(className="meta-card-header-placeholder", children="Sem capa")
     )
     income = row["estimated_income"]
-    return html.Div(
+    return html.A(
         className="meta-card",
+        href=f"{STEAM_STORE_BASE_URL}{row['steam_appid']}/{row['name'].replace(' ', '_')}",
+        target="_blank",
+        rel="noopener noreferrer",
         children=[
             html.Div(
                 className="meta-card-hero",
                 children=[
                     hero,
                     html.Span(rank_label, className="meta-card-rank"),
-                    html.Span(
+                    html.A(
+                        href=f"{METACRITIC_BASE_URL}{row['name'].replace(' ', '-').replace('™', '').lower()}",
+                        target="_blank",
+                        rel="noopener noreferrer",
+                        children=
                         f"{score:.0f}",
                         className=f"meta-card-score {_metacritic_score_class(score)}",
                         title="Metacritic",
@@ -297,9 +316,14 @@ def _metacritic_card(row, rank_label):
                 children=[
                     html.Strong(row["name"], className="meta-card-title"),
                     html.Span(_genres_display(row.get("genres")), className="meta-card-genre"),
-                    html.Span(
-                        fmt_compact(row["estimated_downloads"]) + " downloads est.",
-                        className="meta-card-stat",
+                    html.A(
+                        href=f"{STEAMDB_BASE_URL}{row['steam_appid']}/charts",
+                        target="_blank",
+                        rel="noopener noreferrer",
+                        children=[
+                            fmt_compact(row["estimated_downloads"]) + " vendas estimadas.",
+                        ],
+                        className="meta-card-stat meta-card-sales",
                     ),
                     html.Span(
                         fmt_brl(income) if income > 0 else "—",
@@ -346,7 +370,7 @@ def top_games_gallery(df, n=8):
 
 def chart_top_downloads(df):
     if df.empty:
-        return _empty_chart("Top 10 — downloads estimados")
+        return _empty_chart("Top 10 — vendas estimadas")
     top = df.nlargest(TOP_N, "estimated_downloads").sort_values("estimated_downloads")
     base = top["estimated_downloads_base"].fillna(0)
     dlc = top["estimated_downloads_dlc"].fillna(0)
@@ -373,7 +397,7 @@ def chart_top_downloads(df):
     fig.update_layout(
         **CHART_LAYOUT,
         barmode="stack",
-        title=dict(text="Top 10 — downloads estimados", x=0, font=dict(size=14)),
+        title=dict(text="Top 10 — vendas estimadas", x=0, font=dict(size=14)),
         xaxis=dict(showgrid=True, gridcolor=THEME["border"], title=""),
         yaxis=dict(showgrid=False),
         legend=dict(
@@ -429,7 +453,7 @@ def chart_top_income(df):
 
 def chart_download_tiers(df):
     if df.empty:
-        return _empty_chart("Distribuição por faixa de downloads")
+        return _empty_chart("Distribuição por faixa de vendas")
     bins = [0, 50_000, 200_000, 1_000_000, float("inf")]
     labels = ["< 50 mil", "50k – 200k", "200k – 1M", "> 1M"]
     tier = pd.cut(df["estimated_downloads"], bins=bins, labels=labels, right=False)
@@ -447,7 +471,7 @@ def chart_download_tiers(df):
     )
     fig.update_layout(
         **CHART_LAYOUT,
-        title=dict(text="Distribuição por faixa de downloads", x=0, font=dict(size=14)),
+        title=dict(text="Distribuição por faixa de vendas", x=0, font=dict(size=14)),
         showlegend=False,
     )
     return fig
@@ -555,11 +579,7 @@ def build_dashboard_body(df):
             html.Section(
                 className="section",
                 children=[
-                    html.H2("Top downloads", className="section-title"),
-                    html.P(
-                        "Images da API dos jogos com maior alcance estimado.",
-                        className="section-desc",
-                    ),
+                    html.H2("Top vendas estimadas", className="section-title"),
                     top_games_gallery(df, n=8),
                 ],
             ),
@@ -604,7 +624,7 @@ def build_dashboard_body(df):
             html.Footer(
                 className="exec-footer",
                 children=(
-                    "Fonte: steam_app_details.csv · Exclui F2P · "
+                    "Fonte: steamWebApi · Exclui F2P lifeservice · "
                     "Preços e reviews via API pública Steam"
                 ),
             ),
@@ -659,7 +679,7 @@ app.index_string = """
         {%favicon%}
         {%css%}
         <style>
-            * { box-sizing: border-box; }
+            * { box-sizing: border-box; text-decoration: none; }
             body { margin: 0; background: #0e1419; }
             .exec-dashboard {
                 min-height: 100vh;
@@ -709,6 +729,12 @@ app.index_string = """
                 border: 1px solid #3d5a73;
                 border-radius: 10px;
                 padding: 16px;
+                transition: transform 0.15s ease, border-color 0.15s ease;
+                cursor: pointer;
+            }
+            .kpi-card:hover {
+                transform: scale(1.02);
+                border-color: #66c0f4;
             }
             .kpi-label {
                 display: block;
@@ -735,6 +761,12 @@ app.index_string = """
                 grid-template-columns: 1fr 1fr;
                 gap: 12px;
                 margin-bottom: 28px;
+                cursor: pointer;
+                transition: transform 0.15s ease, border-color 0.15s ease;
+            }
+            .highlight-strip:hover {
+                transform: scale(1.02);
+                border-color: #66c0f4;
             }
             .highlight-item {
                 display: flex;
@@ -835,6 +867,7 @@ app.index_string = """
                 padding: 2px 8px;
                 border-radius: 4px;
             }
+
             .meta-card-score {
                 position: absolute;
                 bottom: 8px;
@@ -849,6 +882,12 @@ app.index_string = """
                 border-radius: 6px;
                 border: 2px solid rgba(0, 0, 0, 0.35);
                 box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+                cursor: pointer;
+                transition: transform 0.15s ease, border-color 0.15s ease;
+            }
+            .meta-card-score:hover {
+                transform: scale(1.08);
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.75);
             }
             .meta-score-high {
                 background: #4c6b22;
@@ -883,6 +922,14 @@ app.index_string = """
                 display: block;
                 color: #66c0f4;
                 font-size: 0.78rem;
+            }
+            .meta-card-stat.meta-card-sales {
+                cursor: pointer;
+                transition: transform 0.15s ease, border-color 0.15s ease;
+            }
+            .meta-card-stat.meta-card-sales:hover {
+                text-decoration: underline;
+                transform: scale(1.02);
             }
             .meta-card-income {
                 color: #a4d007;
@@ -947,6 +994,14 @@ app.index_string = """
                 display: block;
                 color: #66c0f4;
                 font-size: 0.78rem;
+            }
+            .game-card-stat.game-card-sales {
+                cursor: pointer;
+                transition: transform 0.15s ease, border-color 0.15s ease;
+            }
+            .game-card-stat.game-card-sales:hover {
+                text-decoration: underline;
+                transform: scale(1.02);
             }
             .game-card-stat.muted { color: #a4d007; margin-top: 2px; }
             .section { margin-bottom: 28px; }
