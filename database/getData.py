@@ -18,6 +18,8 @@ MAX_RETRIES = int(os.getenv("STEAM_MAX_RETRIES", "8"))
 # Espera padrão se o servidor não enviar Retry-After (segundos).
 DEFAULT_RATE_LIMIT_WAIT = int(os.getenv("STEAM_RATE_LIMIT_WAIT", "60"))
 
+RATE_LIMIT = int(os.getenv("RATE_LIMIT", "100"))
+
 SESSION_HEADERS = {
     "User-Agent": "SteamDashboard/1.0 (educational project)",
     "Accept": "application/json",
@@ -130,6 +132,8 @@ def _review_tier(review_count):
         return "indie"
     if review_count <= 5000:
         return "AA"
+    if review_count >= 1000000:
+        return "public_success"
     return "AAA"
 
 
@@ -153,12 +157,11 @@ def _market_tier(release_date):
 
 
 def _community_review_factor(review_count):
-    """Ajuste para jogos pagos com comunidade hiperativa (ex.: Garry's Mod)."""
     if review_count <= 0:
         return 1.0
     if review_count < 300_000:
         return 1.0
-    return max(0.40, 1.0 - math.log10(review_count / 300_000) * 0.35)
+    return max(0.55, 1.0 - math.log10(review_count / 300_000) * 0.35)
 
 
 def multiplier_base(review_count, release_date):
@@ -168,34 +171,42 @@ def multiplier_base(review_count, release_date):
     match (market, tier):
         # Lançamentos / novos (< 3 anos na loja)
         case ("new", "indie"):
-            return 20
+            return 15
         case ("new", "AA"):
-            return 28
+            return 22
         case ("new", "AAA"):
-            return 35
+            return 28
+        case ("new", "public_success"):
+            return 20
         # Jogos médios (3–6 anos — muitas promoções 50–75%)
         case ("medium", "indie"):
-            return 40
+            return 30
         case ("medium", "AA"):
-            return 48
+            return 38
         case ("medium", "AAA"):
-            return 55
+            return 45
+        case ("medium", "public_success"):
+            return 24
         # 7–9 anos (entre médio e clássico)
         case ("mature", "indie"):
-            return 50
+            return 38
         case ("mature", "AA"):
-            return 57
+            return 46
         case ("mature", "AAA"):
-            return 65
+            return 52
+        case ("mature", "public_success"):
+            return 26
         # Clássicos (10+ anos — descontos ~90% repetidos)
         case ("classic", "indie"):
-            return 60
+            return 45
         case ("classic", "AA"):
-            return 70
+            return 55
         case ("classic", "AAA"):
-            return 80
+            return 62
+        case ("classic", "public_success"):
+            return 27
         case _:
-            return 35
+            return 28
 
 
 def multiplier_dlc(dlc_reviews, release_date):
@@ -486,4 +497,4 @@ def getAppDetails(limit=None, skip_existing=True):
         
 
 if __name__ == "__main__":
-    getAppDetails(1000)
+    getAppDetails(RATE_LIMIT)
