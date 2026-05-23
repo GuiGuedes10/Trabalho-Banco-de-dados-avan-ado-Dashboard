@@ -63,20 +63,7 @@ def safe_load_data():
 
 def load_data():
     df = pd.read_csv(CSV_PATH)
-    if "is_free" in df.columns:
-        df = df[
-            ~df["is_free"].apply(
-                lambda v: v is True or str(v).strip().lower() in ("true", "1", "yes")
-            )
-        ].copy()
-    df["estimated_downloads"] = (
-        df["estimated_downloads_base"].fillna(0) + df["estimated_downloads_dlc"].fillna(0)
-    )
-    df["estimated_income"] = df["estimated_income"].fillna(0)
-    df["price_brl"] = df["price_overview.final"].fillna(0) / 100
-    df["name_short"] = df["name"].astype(str).str.slice(0, 28)
-    df["has_dlc"] = df["estimated_downloads_dlc"].fillna(0) > 0
-    return df
+    return prepare_dashboard_dataframe(df)
 
 
 def fmt_compact(value):
@@ -123,7 +110,7 @@ def compute_kpis(df):
     top_dl = df.loc[df["estimated_downloads"].idxmax()]
     top_inc = df.loc[df["estimated_income"].idxmax()]
     meta = df["metacritic.score"].dropna()
-    return {
+    kpis = {
         "games": len(df),
         "downloads_total": df["estimated_downloads"].sum(),
         "income_total": df["estimated_income"].sum(),
@@ -139,12 +126,45 @@ def compute_kpis(df):
         "top_income_val": top_inc["estimated_income"],
         "top_income_img": top_inc.get("header_image"),
     }
+    if "estimated_downloads_pessimistic" in df.columns:
+        kpis["downloads_pessimistic_total"] = df["estimated_downloads_pessimistic"].sum()
+        kpis["downloads_optimistic_total"] = df["estimated_downloads_optimistic"].sum()
+    return kpis
+
+
+def _has_download_scenarios(df):
+    return (
+        not df.empty
+        and "estimated_downloads_pessimistic" in df.columns
+        and "estimated_downloads_optimistic" in df.columns
+    )
+
+
+def _downloads_display(row):
+    mid = row["estimated_downloads"]
+    if (
+        "estimated_downloads_pessimistic" not in row.index
+        or "estimated_downloads_optimistic" not in row.index
+    ):
+        return fmt_compact(mid) + " vendas est."
+    low = row["estimated_downloads_pessimistic"]
+    high = row["estimated_downloads_optimistic"]
+    return f"{fmt_compact(low)} – {fmt_compact(high)} vendas est."
 
 
 def kpi_row(kpis):
+    if kpis.get("downloads_pessimistic_total") is not None:
+        sales_value = (
+            f"{fmt_compact(kpis['downloads_pessimistic_total'])} – "
+            f"{fmt_compact(kpis['downloads_optimistic_total'])}"
+        )
+        sales_hint = f"Mediana do catálogo: {fmt_compact(kpis['downloads_total'])}"
+    else:
+        sales_value = fmt_compact(kpis["downloads_total"])
+        sales_hint = "Base + DLC ·"
     cards = [
         ("Jogos analisados", f"{kpis['games']:,}", "Catálogo pago · BRL"),
-        ("Vendas estimadas", fmt_compact(kpis["downloads_total"]), "Base + DLC"),
+        ("Vendas estimadas", sales_value, sales_hint),
         ("Receita estimada", fmt_brl(kpis["income_total"]), "Vendas × preço efetivo"),
         ("Reviews na Steam", fmt_compact(kpis["reviews_total"]), "Soma do catálogo"),
         ("Ganhos da Steam", fmt_brl(kpis["income_total"] * 0.3), "Receita gerada para a Steam"),
@@ -232,14 +252,16 @@ def _game_card(row, rank_label):
                         href=f"{STEAMDB_BASE_URL}{row['steam_appid']}/charts",
                         target="_blank",
                         rel="noopener noreferrer",
-                        children=[
-                            fmt_compact(row["estimated_downloads"]) + " vendas estimadas.",
-                        ],
+                        children=[fmt_compact(row["estimated_downloads"])],
                         className="game-card-stat game-card-sales",
                     ),
                     html.Span(
+                        _downloads_display(row),
+                        className="game-card-stat game-card-op-pess", 
+                    ),
+                    html.Span(
                         fmt_brl(row["estimated_income"]) if row["estimated_income"] > 0 else "—",
-                        className="game-card-stat muted",
+                        className="game-card-stat game-card-op-pess muted",
                     ),
                 ],
             ),
@@ -320,10 +342,12 @@ def _metacritic_card(row, rank_label):
                         href=f"{STEAMDB_BASE_URL}{row['steam_appid']}/charts",
                         target="_blank",
                         rel="noopener noreferrer",
-                        children=[
-                            fmt_compact(row["estimated_downloads"]) + " vendas estimadas.",
-                        ],
+                        children=[fmt_compact(row["estimated_downloads"])],
                         className="meta-card-stat meta-card-sales",
+                    ),
+                    html.Span(
+                        _downloads_display(row),
+                        className="meta-card-stat meta-card-op-pess muted",
                     ),
                     html.Span(
                         fmt_brl(income) if income > 0 else "—",
@@ -421,6 +445,118 @@ def chart_top_downloads(df):
             xshift=6,
             font=dict(size=11, color=THEME["text"]),
         )
+    return fig
+
+
+def chart_top_downloads_scenario(df):
+    if df.empty:
+        return _empty_chart("Top 10 — faixa de vendas (pess. / otim.)")
+    if not _has_download_scenarios(df):
+        fig = _empty_chart("Top 10 — faixa de vendas (pess. / otim.)")
+        fig.update_layout(
+            annotations=[
+                dict(
+                    text="Colunas pessimista/otimista ausentes no CSV.",
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=0.5,
+                    showarrow=False,
+                    font=dict(size=13, color=THEME["muted"]),
+                )
+            ]
+        )
+        return fig
+
+    top = df.nlargest(TOP_N, "estimated_downloads").sort_values("estimated_downloads")
+    mid = top["estimated_downloads"]
+    low = top["estimated_downloads_pessimistic"]
+    high = top["estimated_downloads_optimistic"]
+    err_plus = (high - mid).clip(lower=0)
+    err_minus = (mid - low).clip(lower=0)
+
+    fig = go.Figure(
+        go.Bar(
+            y=top["name_short"],
+            x=mid,
+            orientation="h",
+            marker=dict(color=THEME["accent"], line=dict(width=0)),
+            error_x=dict(
+                type="data",
+                symmetric=False,
+                array=err_plus,
+                arrayminus=err_minus,
+                color=THEME["warn"],
+                thickness=1.5,
+                width=4,
+            ),
+            hovertemplate=(
+                "%{y}<br>Mediana: %{x:,.0f}<br>"
+                "Pessimista: %{customdata[0]:,.0f}<br>"
+                "Otimista: %{customdata[1]:,.0f}<extra></extra>"
+            ),
+            customdata=list(zip(low, high)),
+        )
+    )
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=dict(
+            text="Top 10 — faixa pessimista / mediana / otimista",
+            x=0,
+            font=dict(size=14),
+        ),
+        xaxis=dict(showgrid=True, gridcolor=THEME["border"], title=""),
+        yaxis=dict(showgrid=False),
+        showlegend=False,
+    )
+    return fig
+
+
+def chart_catalog_scenario_totals(df):
+    if df.empty:
+        return _empty_chart("Catálogo — cenários de vendas")
+    if not _has_download_scenarios(df):
+        fig = _empty_chart("Catálogo — cenários de vendas")
+        fig.update_layout(
+            annotations=[
+                dict(
+                    text="Colunas pessimista/otimista ausentes no CSV.",
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=0.5,
+                    showarrow=False,
+                    font=dict(size=13, color=THEME["muted"]),
+                )
+            ]
+        )
+        return fig
+
+    labels = ["Pessimista", "Mediana", "Otimista"]
+    values = [
+        df["estimated_downloads_pessimistic"].sum(),
+        df["estimated_downloads"].sum(),
+        df["estimated_downloads_optimistic"].sum(),
+    ]
+    colors = [THEME["border"], THEME["accent"], THEME["success"]]
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=values,
+            marker=dict(color=colors, line=dict(width=0)),
+            text=[fmt_compact(v) for v in values],
+            textposition="outside",
+            textfont=dict(size=11, color=THEME["text"]),
+            hovertemplate="%{x}<br>%{y:,.0f} vendas<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=dict(text="Catálogo inteiro — soma dos cenários", x=0, font=dict(size=14)),
+        xaxis=dict(showgrid=False, title=""),
+        yaxis=dict(showgrid=True, gridcolor=THEME["border"], title=""),
+        showlegend=False,
+    )
     return fig
 
 
@@ -596,6 +732,30 @@ def build_dashboard_body(df):
                             ),
                             dcc.Graph(
                                 figure=chart_top_income(df),
+                                config=graph_cfg,
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            html.Section(
+                className="section",
+                children=[
+                    html.H2("Incerteza das estimativas", className="section-title"),
+                    html.P(
+                        "Faixa pessimista / otimista no Top 10 e no total do catálogo "
+                        "(não exibe jogo a jogo).",
+                        className="section-desc",
+                    ),
+                    html.Div(
+                        className="charts-2",
+                        children=[
+                            dcc.Graph(
+                                figure=chart_top_downloads_scenario(df),
+                                config=graph_cfg,
+                            ),
+                            dcc.Graph(
+                                figure=chart_catalog_scenario_totals(df),
                                 config=graph_cfg,
                             ),
                         ],
@@ -931,6 +1091,11 @@ app.index_string = """
                 text-decoration: underline;
                 transform: scale(1.02);
             }
+            .meta-card-stat.meta-card-op-pess.muted {
+                color: #FFAC1C;
+                margin-top: 2px;
+                font-size: 10px;
+            }
             .meta-card-income {
                 color: #a4d007;
                 margin-top: 3px;
@@ -1012,6 +1177,11 @@ app.index_string = """
                 margin: 0 0 12px 0;
                 padding-bottom: 8px;
                 border-bottom: 1px solid #3d5a73;
+            }
+            .game-card-op-pess {
+                font-size: 10px;
+                color: #FFAC1C;
+                margin-top: 2px;
             }
             .charts-2 {
                 display: grid;

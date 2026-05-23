@@ -28,6 +28,8 @@ COLUMNS = [
     "total_reviews",
     "dlc_reviews",
     "estimated_downloads_base",
+    "estimated_downloads_base_optimistic",
+    "estimated_downloads_base_pessimistic",
     "estimated_downloads_dlc",
     "estimated_players_dont_have_dlc",
     "estimated_income",
@@ -97,81 +99,91 @@ def _community_review_factor(review_count):
     return max(0.55, 1.0 - math.log10(review_count / 300_000) * 0.35)
 
 
+_MULTIPLIER_PROFILE = {
+    ("new", "indie"): {"center": 15, "spread": 0.20},
+    ("new", "AA"): {"center": 22, "spread": 0.24},
+    ("new", "AAA"): {"center": 28, "spread": 0.30},
+    ("new", "public_success"): {"center": 20, "spread_low": 0.40, "spread_high": 0.30},
+    ("medium", "indie"): {"center": 30, "spread": 0.18},
+    ("medium", "AA"): {"center": 38, "spread": 0.18},
+    ("medium", "AAA"): {"center": 45, "spread": 0.18},
+    ("medium", "public_success"): {"center": 24, "spread_low": 0.35, "spread_high": 0.28},
+    ("mature", "indie"): {"center": 38, "spread": 0.15},
+    ("mature", "AA"): {"center": 46, "spread": 0.15},
+    ("mature", "AAA"): {"center": 52, "spread": 0.12},
+    ("mature", "public_success"): {"center": 26, "spread_low": 0.32, "spread_high": 0.26},
+    ("classic", "indie"): {"center": 45, "spread": 0.12},
+    ("classic", "AA"): {"center": 55, "spread": 0.12},
+    ("classic", "AAA"): {"center": 62, "spread": 0.10},
+    ("classic", "public_success"): {"center": 42, "spread": 0.12},
+}
+
+_DEFAULT_MULTIPLIER_PROFILE = {"center": 28, "spread": 0.20}
+
+
+def _multiplier_bounds(profile):
+    center = profile["center"]
+    if "spread_low" in profile:
+        low = max(1, round(center * (1 - profile["spread_low"])))
+        high = round(center * (1 + profile["spread_high"]))
+    else:
+        spread = profile["spread"]
+        low = max(1, round(center * (1 - spread)))
+        high = round(center * (1 + spread))
+    if low >= high:
+        high = low + 1
+    return low, high
+
+
 def multiplier_base(review_count, release_date):
     tier = _review_tier(review_count)
     market = _market_tier(release_date)
-
-    match (market, tier):
-        case ("new", "indie"):
-            return 15
-        case ("new", "AA"):
-            return 22
-        case ("new", "AAA"):
-            return 28
-        case ("new", "public_success"):
-            return 20
-        case ("medium", "indie"):
-            return 30
-        case ("medium", "AA"):
-            return 38
-        case ("medium", "AAA"):
-            return 45
-        case ("medium", "public_success"):
-            return 24
-        case ("mature", "indie"):
-            return 38
-        case ("mature", "AA"):
-            return 46
-        case ("mature", "AAA"):
-            return 52
-        case ("mature", "public_success"):
-            return 26
-        case ("classic", "indie"):
-            return 45
-        case ("classic", "AA"):
-            return 55
-        case ("classic", "AAA"):
-            return 62
-        case ("classic", "public_success"):
-            return 27
-        case _:
-            return 28
+    profile = _MULTIPLIER_PROFILE.get((market, tier), _DEFAULT_MULTIPLIER_PROFILE)
+    return _multiplier_bounds(profile)
 
 
-def multiplier_dlc(dlc_reviews, release_date):
-    return int(multiplier_base(dlc_reviews, release_date) * 1.5)
-
-
-def _tiered_downloads(review_count, release_date, mult_fn):
+def _tiered_downloads(review_count, mult):
     if review_count <= 0:
         return 0
     if review_count <= 1000:
-        return review_count * mult_fn(review_count, release_date)
+        return review_count * mult
     if review_count <= 5000:
-        return (
-            1000 * mult_fn(1000, release_date)
-            + (review_count - 1000) * mult_fn(review_count, release_date)
-        )
-    return (
-        1000 * mult_fn(1000, release_date)
-        + 4000 * mult_fn(5000, release_date)
-        + (review_count - 5000) * mult_fn(review_count, release_date)
-    )
+        return 1000 * mult + (review_count - 1000) * mult
+    return review_count * mult
+
+
+def _base_scenario_downloads(total_reviews, release_date, community_factor):
+    low, high = multiplier_base(total_reviews, release_date)
+    pessimistic = int(_tiered_downloads(total_reviews, low) * community_factor)
+    optimistic = int(_tiered_downloads(total_reviews, high) * community_factor)
+    if pessimistic > optimistic:
+        pessimistic, optimistic = optimistic, pessimistic
+    median = (pessimistic + optimistic) // 2
+    return pessimistic, optimistic, median
 
 
 def estimate_downloads(total_reviews, dlc_reviews, release_date):
     community_factor = _community_review_factor(total_reviews)
-    download_base = int(
-        _tiered_downloads(total_reviews, release_date, multiplier_base) * community_factor
+    download_base_pessimistic, download_base_optimistic, download_base = (
+        _base_scenario_downloads(total_reviews, release_date, community_factor)
     )
     if dlc_reviews > 0:
         dlc_factor = _community_review_factor(dlc_reviews)
-        download_dlc = int(
-            _tiered_downloads(dlc_reviews, release_date, multiplier_dlc) * dlc_factor
-        )
+        dlc_low, dlc_high = multiplier_base(dlc_reviews, release_date)
+        dlc_pessimistic = int(_tiered_downloads(dlc_reviews, int(dlc_low * 1.5)) * dlc_factor)
+        dlc_optimistic = int(_tiered_downloads(dlc_reviews, int(dlc_high * 1.5)) * dlc_factor)
+        if dlc_pessimistic > dlc_optimistic:
+            dlc_pessimistic, dlc_optimistic = dlc_optimistic, dlc_pessimistic
+        download_dlc = (dlc_pessimistic + dlc_optimistic) // 2
     else:
         download_dlc = 0
-    return download_base, download_dlc, community_factor
+    return (
+        download_base_optimistic,
+        download_base_pessimistic,
+        download_base,
+        download_dlc,
+        community_factor,
+    )
 
 
 def effective_price_brl(game):
@@ -208,10 +220,12 @@ def enrich_game_with_insights(game, total_reviews, dlc_reviews):
     game["dlc_reviews"] = dlc_reviews
 
     release_date = parse_release_date(game)
-    download_base, download_dlc, community_factor = estimate_downloads(
+    download_base_optimistic, download_base_pessimistic, download_base, download_dlc, community_factor = estimate_downloads(
         total_reviews, dlc_reviews, release_date
     )
     game["estimated_downloads_base"] = download_base
+    game["estimated_downloads_base_optimistic"] = download_base_optimistic
+    game["estimated_downloads_base_pessimistic"] = download_base_pessimistic
     game["estimated_downloads_dlc"] = download_dlc
     game["estimated_players_dont_have_dlc"] = download_base - download_dlc
     game["community_review_factor"] = round(community_factor, 4)
@@ -268,9 +282,17 @@ def prepare_dashboard_dataframe(df):
     df = df.copy()
     if "is_free" in df.columns:
         df, _ = purge_f2p_from_df(df)
-    df["estimated_downloads"] = (
-        df["estimated_downloads_base"].fillna(0) + df["estimated_downloads_dlc"].fillna(0)
-    )
+    dlc = df["estimated_downloads_dlc"].fillna(0)
+    base = df["estimated_downloads_base"].fillna(0)
+    df["estimated_downloads"] = base + dlc
+    if "estimated_downloads_base_pessimistic" in df.columns:
+        df["estimated_downloads_pessimistic"] = (
+            df["estimated_downloads_base_pessimistic"].fillna(0) + dlc
+        )
+    if "estimated_downloads_base_optimistic" in df.columns:
+        df["estimated_downloads_optimistic"] = (
+            df["estimated_downloads_base_optimistic"].fillna(0) + dlc
+        )
     df["estimated_income"] = df["estimated_income"].fillna(0)
     df["price_brl"] = df["price_overview.final"].fillna(0) / 100
     df["name_short"] = df["name"].astype(str).str.slice(0, 28)
