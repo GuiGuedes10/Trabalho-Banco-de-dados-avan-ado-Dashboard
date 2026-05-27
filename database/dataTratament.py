@@ -1,8 +1,11 @@
+import ast
 import math
 import os
 from datetime import datetime
 
 import pandas as pd
+
+FREE_TO_PLAY_GENRE_ID = 37
 
 DATA_DIR = "database/data"
 DETAILS_CSV = f"{DATA_DIR}/steam_app_details.csv"
@@ -27,10 +30,10 @@ COLUMNS = [
     "metacritic.score",
     "total_reviews",
     "dlc_reviews",
-    "estimated_downloads_base",
-    "estimated_downloads_base_optimistic",
-    "estimated_downloads_base_pessimistic",
-    "estimated_downloads_dlc",
+    "estimated_sales_base",
+    "estimated_sales_base_optimistic",
+    "estimated_sales_base_pessimistic",
+    "estimated_sales_dlc",
     "estimated_players_dont_have_dlc",
     "estimated_income",
     "community_review_factor",
@@ -142,7 +145,7 @@ def multiplier_base(review_count, release_date):
     return _multiplier_bounds(profile)
 
 
-def _tiered_downloads(review_count, mult):
+def _tiered_sales(review_count, mult):
     if review_count <= 0:
         return 0
     if review_count <= 1000:
@@ -152,36 +155,36 @@ def _tiered_downloads(review_count, mult):
     return review_count * mult
 
 
-def _base_scenario_downloads(total_reviews, release_date, community_factor):
+def _base_scenario_sales(total_reviews, release_date, community_factor):
     low, high = multiplier_base(total_reviews, release_date)
-    pessimistic = int(_tiered_downloads(total_reviews, low) * community_factor)
-    optimistic = int(_tiered_downloads(total_reviews, high) * community_factor)
+    pessimistic = int(_tiered_sales(total_reviews, low) * community_factor)
+    optimistic = int(_tiered_sales(total_reviews, high) * community_factor)
     if pessimistic > optimistic:
         pessimistic, optimistic = optimistic, pessimistic
     median = (pessimistic + optimistic) // 2
     return pessimistic, optimistic, median
 
 
-def estimate_downloads(total_reviews, dlc_reviews, release_date):
+def estimate_sales(total_reviews, dlc_reviews, release_date):
     community_factor = _community_review_factor(total_reviews)
-    download_base_pessimistic, download_base_optimistic, download_base = (
-        _base_scenario_downloads(total_reviews, release_date, community_factor)
+    sales_base_pessimistic, sales_base_optimistic, sales_base = (
+        _base_scenario_sales(total_reviews, release_date, community_factor)
     )
     if dlc_reviews > 0:
         dlc_factor = _community_review_factor(dlc_reviews)
         dlc_low, dlc_high = multiplier_base(dlc_reviews, release_date)
-        dlc_pessimistic = int(_tiered_downloads(dlc_reviews, int(dlc_low * 1.5)) * dlc_factor)
-        dlc_optimistic = int(_tiered_downloads(dlc_reviews, int(dlc_high * 1.5)) * dlc_factor)
+        dlc_pessimistic = int(_tiered_sales(dlc_reviews, int(dlc_low * 1.5)) * dlc_factor)
+        dlc_optimistic = int(_tiered_sales(dlc_reviews, int(dlc_high * 1.5)) * dlc_factor)
         if dlc_pessimistic > dlc_optimistic:
             dlc_pessimistic, dlc_optimistic = dlc_optimistic, dlc_pessimistic
-        download_dlc = (dlc_pessimistic + dlc_optimistic) // 2
+        sales_dlc = (dlc_pessimistic + dlc_optimistic) // 2
     else:
-        download_dlc = 0
+        sales_dlc = 0
     return (
-        download_base_optimistic,
-        download_base_pessimistic,
-        download_base,
-        download_dlc,
+        sales_base_optimistic,
+        sales_base_pessimistic,
+        sales_base,
+        sales_dlc,
         community_factor,
     )
 
@@ -220,25 +223,74 @@ def enrich_game_with_insights(game, total_reviews, dlc_reviews):
     game["dlc_reviews"] = dlc_reviews
 
     release_date = parse_release_date(game)
-    download_base_optimistic, download_base_pessimistic, download_base, download_dlc, community_factor = estimate_downloads(
+    sales_base_optimistic, sales_base_pessimistic, sales_base, sales_dlc, community_factor = estimate_sales(
         total_reviews, dlc_reviews, release_date
     )
-    game["estimated_downloads_base"] = download_base
-    game["estimated_downloads_base_optimistic"] = download_base_optimistic
-    game["estimated_downloads_base_pessimistic"] = download_base_pessimistic
-    game["estimated_downloads_dlc"] = download_dlc
-    game["estimated_players_dont_have_dlc"] = download_base - download_dlc
+    game["estimated_sales_base"] = sales_base
+    game["estimated_sales_base_optimistic"] = sales_base_optimistic
+    game["estimated_sales_base_pessimistic"] = sales_base_pessimistic
+    game["estimated_sales_dlc"] = sales_dlc
+    game["estimated_players_dont_have_dlc"] = sales_base - sales_dlc
     game["community_review_factor"] = round(community_factor, 4)
-    game["estimated_income"] = download_base * effective_price_brl(game)
+    game["estimated_income"] = sales_base * effective_price_brl(game)
     return game
 
 
+def _parse_genres(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() in ("nan", "none"):
+            return []
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def has_free_to_play_genre(genres):
+    for entry in _parse_genres(genres):
+        if not isinstance(entry, dict):
+            continue
+        genre_id = entry.get("id")
+        if genre_id is not None:
+            try:
+                if int(genre_id) == FREE_TO_PLAY_GENRE_ID:
+                    return True
+            except (TypeError, ValueError):
+                if str(genre_id).strip() == str(FREE_TO_PLAY_GENRE_ID):
+                    return True
+        description = (entry.get("description") or "").strip().lower()
+        if description == "free to play":
+            return True
+    return False
+
+
+def _is_free_flag(value):
+    return value is True or str(value).strip().lower() in ("true", "1", "yes")
+
+
+def is_free_to_play_game(game):
+    if not isinstance(game, dict):
+        return False
+    if game.get("is_free") is True:
+        return True
+    return has_free_to_play_genre(game.get("genres"))
+
+
 def purge_f2p_from_df(df):
-    if df is None or df.empty or "is_free" not in df.columns:
+    if df is None or df.empty:
         return df, 0
-    is_f2p = df["is_free"].apply(
-        lambda v: v is True or str(v).strip().lower() in ("true", "1", "yes")
-    )
+    is_f2p = pd.Series(False, index=df.index)
+    if "is_free" in df.columns:
+        is_f2p = is_f2p | df["is_free"].apply(_is_free_flag)
+    if "genres" in df.columns:
+        is_f2p = is_f2p | df["genres"].apply(has_free_to_play_genre)
     removed = int(is_f2p.sum())
     if removed:
         df = df[~is_f2p].copy()
@@ -276,25 +328,35 @@ def append_game_to_csv(game, out_path, existing_df):
     return detail_df
 
 
+_LEGACY_SALES_COLUMNS = {
+    "estimated_downloads_base": "estimated_sales_base",
+    "estimated_downloads_base_optimistic": "estimated_sales_base_optimistic",
+    "estimated_downloads_base_pessimistic": "estimated_sales_base_pessimistic",
+    "estimated_downloads_dlc": "estimated_sales_dlc",
+}
+
+
 def prepare_dashboard_dataframe(df):
     if df.empty:
         return df
     df = df.copy()
-    if "is_free" in df.columns:
-        df, _ = purge_f2p_from_df(df)
-    dlc = df["estimated_downloads_dlc"].fillna(0)
-    base = df["estimated_downloads_base"].fillna(0)
-    df["estimated_downloads"] = base + dlc
-    if "estimated_downloads_base_pessimistic" in df.columns:
-        df["estimated_downloads_pessimistic"] = (
-            df["estimated_downloads_base_pessimistic"].fillna(0) + dlc
+    rename = {old: new for old, new in _LEGACY_SALES_COLUMNS.items() if old in df.columns}
+    if rename:
+        df = df.rename(columns=rename)
+    df, _ = purge_f2p_from_df(df)
+    dlc = df["estimated_sales_dlc"].fillna(0)
+    base = df["estimated_sales_base"].fillna(0)
+    df["estimated_sales"] = base + dlc
+    if "estimated_sales_base_pessimistic" in df.columns:
+        df["estimated_sales_pessimistic"] = (
+            df["estimated_sales_base_pessimistic"].fillna(0) + dlc
         )
-    if "estimated_downloads_base_optimistic" in df.columns:
-        df["estimated_downloads_optimistic"] = (
-            df["estimated_downloads_base_optimistic"].fillna(0) + dlc
+    if "estimated_sales_base_optimistic" in df.columns:
+        df["estimated_sales_optimistic"] = (
+            df["estimated_sales_base_optimistic"].fillna(0) + dlc
         )
     df["estimated_income"] = df["estimated_income"].fillna(0)
     df["price_brl"] = df["price_overview.final"].fillna(0) / 100
     df["name_short"] = df["name"].astype(str).str.slice(0, 28)
-    df["has_dlc"] = df["estimated_downloads_dlc"].fillna(0) > 0
+    df["has_dlc"] = df["estimated_sales_dlc"].fillna(0) > 0
     return df

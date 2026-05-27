@@ -9,6 +9,7 @@ from database.dataTratament import (
     DETAILS_CSV,
     append_game_to_csv,
     enrich_game_with_insights,
+    is_free_to_play_game,
     load_existing_details,
 )
 
@@ -41,10 +42,6 @@ def _retry_after_seconds(response):
     if str(raw).isdigit():
         return max(int(raw), 1)
     return DEFAULT_RATE_LIMIT_WAIT
-
-
-def _is_free_to_play(game_data):
-    return game_data.get("is_free") is True
 
 
 def _is_brl_catalog(game_data):
@@ -128,10 +125,10 @@ def fetch_appdetails(session, app_id):
             return None
 
         game_data = entry["data"]
-        if _is_free_to_play(game_data):
+        if is_free_to_play_game(game_data):
             print(
                 f"app_id={key} ({game_data.get('name', '?')}): F2P — ignorado "
-                f"(análise apenas jogos pagos)."
+                f"(is_free ou genero Free to Play)."
             )
             return None
 

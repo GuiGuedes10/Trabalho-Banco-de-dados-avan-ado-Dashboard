@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import threading
 
 from dash import Dash, Input, Output, dcc, html
+from dashboard_nav import dashboard_nav
 from database.dataTratament import DETAILS_CSV, prepare_dashboard_dataframe
 from database.getData import getAppDetails
 from dotenv import load_dotenv
@@ -92,75 +93,67 @@ def compute_kpis(df):
     if df.empty:
         return {
             "games": 0,
-            "downloads_total": 0,
+            "sales_total": 0,
             "income_total": 0,
             "reviews_total": 0,
             "avg_price": None,
             "with_dlc": 0,
-            "avg_downloads": 0,
+            "avg_sales": 0,
             "metacritic_avg": None,
-            "top_downloads_name": "—",
-            "top_downloads_val": 0,
-            "top_downloads_img": None,
+            "top_sales_name": "—",
+            "top_sales_val": 0,
+            "top_sales_img": None,
             "top_income_name": "—",
             "top_income_val": 0,
             "top_income_img": None,
         }
 
-    top_dl = df.loc[df["estimated_downloads"].idxmax()]
+    top_sales = df.loc[df["estimated_sales"].idxmax()]
     top_inc = df.loc[df["estimated_income"].idxmax()]
     meta = df["metacritic.score"].dropna()
     kpis = {
         "games": len(df),
-        "downloads_total": df["estimated_downloads"].sum(),
+        "sales_total": df["estimated_sales"].sum(),
         "income_total": df["estimated_income"].sum(),
         "reviews_total": int(df["total_reviews"].fillna(0).sum()),
         "avg_price": df["price_brl"].replace(0, pd.NA).mean(),
         "with_dlc": int(df["has_dlc"].sum()),
-        "avg_downloads": df["estimated_downloads"].mean(),
+        "avg_sales": df["estimated_sales"].mean(),
         "metacritic_avg": meta.mean() if len(meta) else None,
-        "top_downloads_name": top_dl["name"],
-        "top_downloads_val": top_dl["estimated_downloads"],
-        "top_downloads_img": top_dl.get("header_image"),
+        "top_sales_name": top_sales["name"],
+        "top_sales_val": top_sales["estimated_sales"],
+        "top_sales_img": top_sales.get("header_image"),
         "top_income_name": top_inc["name"],
         "top_income_val": top_inc["estimated_income"],
         "top_income_img": top_inc.get("header_image"),
     }
-    if "estimated_downloads_pessimistic" in df.columns:
-        kpis["downloads_pessimistic_total"] = df["estimated_downloads_pessimistic"].sum()
-        kpis["downloads_optimistic_total"] = df["estimated_downloads_optimistic"].sum()
+    if "estimated_sales_pessimistic" in df.columns:
+        kpis["sales_pessimistic_total"] = df["estimated_sales_pessimistic"].sum()
+        kpis["sales_optimistic_total"] = df["estimated_sales_optimistic"].sum()
     return kpis
 
 
-def _has_download_scenarios(df):
-    return (
-        not df.empty
-        and "estimated_downloads_pessimistic" in df.columns
-        and "estimated_downloads_optimistic" in df.columns
-    )
-
-
-def _downloads_display(row):
-    mid = row["estimated_downloads"]
+def _sales_display(row):
+    mid = row["estimated_sales"]
     if (
-        "estimated_downloads_pessimistic" not in row.index
-        or "estimated_downloads_optimistic" not in row.index
+        "estimated_sales_pessimistic" not in row.index
+        or "estimated_sales_optimistic" not in row.index
     ):
         return fmt_compact(mid) + " vendas est."
-    low = row["estimated_downloads_pessimistic"]
-    high = row["estimated_downloads_optimistic"]
+    low = row["estimated_sales_pessimistic"]
+    high = row["estimated_sales_optimistic"]
     return f"{fmt_compact(low)} – {fmt_compact(high)} vendas est."
 
 
 def kpi_row(kpis):
-    if kpis.get("downloads_pessimistic_total") is not None:
+    if kpis.get("sales_pessimistic_total") is not None:
         sales_value = (
-            f"{fmt_compact(kpis['downloads_pessimistic_total'])} – "
-            f"{fmt_compact(kpis['downloads_optimistic_total'])}"
+            f"{fmt_compact(kpis['sales_pessimistic_total'])} – "
+            f"{fmt_compact(kpis['sales_optimistic_total'])}"
         )
-        sales_hint = f"Mediana do catálogo: {fmt_compact(kpis['downloads_total'])}"
+        sales_hint = f"Mediana do catálogo: {fmt_compact(kpis['sales_total'])}"
     else:
-        sales_value = fmt_compact(kpis["downloads_total"])
+        sales_value = fmt_compact(kpis["sales_total"])
         sales_hint = "Base + DLC ·"
     cards = [
         ("Jogos analisados", f"{kpis['games']:,}", "Catálogo pago · BRL"),
@@ -214,9 +207,9 @@ def highlight_strip(kpis):
         children=[
             _highlight_card(
                 "Maior alcance",
-                kpis["top_downloads_name"],
-                fmt_compact(kpis["top_downloads_val"]) + " Vendas estimadas.",
-                kpis.get("top_downloads_img"),
+                kpis["top_sales_name"],
+                fmt_compact(kpis["top_sales_val"]) + " Vendas estimadas.",
+                kpis.get("top_sales_img"),
             ),
             _highlight_card(
                 "Maior receita est.",
@@ -252,11 +245,11 @@ def _game_card(row, rank_label):
                         href=f"{STEAMDB_BASE_URL}{row['steam_appid']}/charts",
                         target="_blank",
                         rel="noopener noreferrer",
-                        children=[fmt_compact(row["estimated_downloads"])],
+                        children=[fmt_compact(row["estimated_sales"])],
                         className="game-card-stat game-card-sales",
                     ),
                     html.Span(
-                        _downloads_display(row),
+                        _sales_display(row),
                         className="game-card-stat game-card-op-pess", 
                     ),
                     html.Span(
@@ -342,11 +335,11 @@ def _metacritic_card(row, rank_label):
                         href=f"{STEAMDB_BASE_URL}{row['steam_appid']}/charts",
                         target="_blank",
                         rel="noopener noreferrer",
-                        children=[fmt_compact(row["estimated_downloads"])],
+                        children=[fmt_compact(row["estimated_sales"])],
                         className="meta-card-stat meta-card-sales",
                     ),
                     html.Span(
-                        _downloads_display(row),
+                        _sales_display(row),
                         className="meta-card-stat meta-card-op-pess muted",
                     ),
                     html.Span(
@@ -382,7 +375,7 @@ def top_metacritic_gallery(df, n=4):
 def top_games_gallery(df, n=8):
     if df.empty:
         return html.P("Aguardando coleta de dados…", className="section-desc")
-    top = df.nlargest(n, "estimated_downloads").reset_index(drop=True)
+    top = df.nlargest(n, "estimated_sales").reset_index(drop=True)
     return html.Div(
         className="game-gallery",
         children=[
@@ -392,12 +385,12 @@ def top_games_gallery(df, n=8):
     )
 
 
-def chart_top_downloads(df):
+def chart_top_sales(df):
     if df.empty:
         return _empty_chart("Top 10 — vendas estimadas")
-    top = df.nlargest(TOP_N, "estimated_downloads").sort_values("estimated_downloads")
-    base = top["estimated_downloads_base"].fillna(0)
-    dlc = top["estimated_downloads_dlc"].fillna(0)
+    top = df.nlargest(TOP_N, "estimated_sales").sort_values("estimated_sales")
+    base = top["estimated_sales_base"].fillna(0)
+    dlc = top["estimated_sales_dlc"].fillna(0)
     fig = go.Figure(
         data=[
             go.Bar(
@@ -435,7 +428,7 @@ def chart_top_downloads(df):
     )
     fig.update_traces(textposition="none")
     for i, row in top.iterrows():
-        total = row["estimated_downloads"]
+        total = row["estimated_sales"]
         fig.add_annotation(
             x=total,
             y=row["name_short"],
@@ -445,118 +438,6 @@ def chart_top_downloads(df):
             xshift=6,
             font=dict(size=11, color=THEME["text"]),
         )
-    return fig
-
-
-def chart_top_downloads_scenario(df):
-    if df.empty:
-        return _empty_chart("Top 10 — faixa de vendas (pess. / otim.)")
-    if not _has_download_scenarios(df):
-        fig = _empty_chart("Top 10 — faixa de vendas (pess. / otim.)")
-        fig.update_layout(
-            annotations=[
-                dict(
-                    text="Colunas pessimista/otimista ausentes no CSV.",
-                    xref="paper",
-                    yref="paper",
-                    x=0.5,
-                    y=0.5,
-                    showarrow=False,
-                    font=dict(size=13, color=THEME["muted"]),
-                )
-            ]
-        )
-        return fig
-
-    top = df.nlargest(TOP_N, "estimated_downloads").sort_values("estimated_downloads")
-    mid = top["estimated_downloads"]
-    low = top["estimated_downloads_pessimistic"]
-    high = top["estimated_downloads_optimistic"]
-    err_plus = (high - mid).clip(lower=0)
-    err_minus = (mid - low).clip(lower=0)
-
-    fig = go.Figure(
-        go.Bar(
-            y=top["name_short"],
-            x=mid,
-            orientation="h",
-            marker=dict(color=THEME["accent"], line=dict(width=0)),
-            error_x=dict(
-                type="data",
-                symmetric=False,
-                array=err_plus,
-                arrayminus=err_minus,
-                color=THEME["warn"],
-                thickness=1.5,
-                width=4,
-            ),
-            hovertemplate=(
-                "%{y}<br>Mediana: %{x:,.0f}<br>"
-                "Pessimista: %{customdata[0]:,.0f}<br>"
-                "Otimista: %{customdata[1]:,.0f}<extra></extra>"
-            ),
-            customdata=list(zip(low, high)),
-        )
-    )
-    fig.update_layout(
-        **CHART_LAYOUT,
-        title=dict(
-            text="Top 10 — faixa pessimista / mediana / otimista",
-            x=0,
-            font=dict(size=14),
-        ),
-        xaxis=dict(showgrid=True, gridcolor=THEME["border"], title=""),
-        yaxis=dict(showgrid=False),
-        showlegend=False,
-    )
-    return fig
-
-
-def chart_catalog_scenario_totals(df):
-    if df.empty:
-        return _empty_chart("Catálogo — cenários de vendas")
-    if not _has_download_scenarios(df):
-        fig = _empty_chart("Catálogo — cenários de vendas")
-        fig.update_layout(
-            annotations=[
-                dict(
-                    text="Colunas pessimista/otimista ausentes no CSV.",
-                    xref="paper",
-                    yref="paper",
-                    x=0.5,
-                    y=0.5,
-                    showarrow=False,
-                    font=dict(size=13, color=THEME["muted"]),
-                )
-            ]
-        )
-        return fig
-
-    labels = ["Pessimista", "Mediana", "Otimista"]
-    values = [
-        df["estimated_downloads_pessimistic"].sum(),
-        df["estimated_downloads"].sum(),
-        df["estimated_downloads_optimistic"].sum(),
-    ]
-    colors = [THEME["border"], THEME["accent"], THEME["success"]]
-    fig = go.Figure(
-        go.Bar(
-            x=labels,
-            y=values,
-            marker=dict(color=colors, line=dict(width=0)),
-            text=[fmt_compact(v) for v in values],
-            textposition="outside",
-            textfont=dict(size=11, color=THEME["text"]),
-            hovertemplate="%{x}<br>%{y:,.0f} vendas<extra></extra>",
-        )
-    )
-    fig.update_layout(
-        **CHART_LAYOUT,
-        title=dict(text="Catálogo inteiro — soma dos cenários", x=0, font=dict(size=14)),
-        xaxis=dict(showgrid=False, title=""),
-        yaxis=dict(showgrid=True, gridcolor=THEME["border"], title=""),
-        showlegend=False,
-    )
     return fig
 
 
@@ -587,12 +468,12 @@ def chart_top_income(df):
     return fig
 
 
-def chart_download_tiers(df):
+def chart_sales_tiers(df):
     if df.empty:
         return _empty_chart("Distribuição por faixa de vendas")
     bins = [0, 50_000, 200_000, 1_000_000, float("inf")]
     labels = ["< 50 mil", "50k – 200k", "200k – 1M", "> 1M"]
-    tier = pd.cut(df["estimated_downloads"], bins=bins, labels=labels, right=False)
+    tier = pd.cut(df["estimated_sales"], bins=bins, labels=labels, right=False)
     counts = tier.value_counts().reindex(labels)
     fig = go.Figure(
         go.Pie(
@@ -696,6 +577,7 @@ def build_dashboard_body(df):
                             ),
                         ]
                     ),
+                    dashboard_nav("main"),
                 ],
             ),
             _fetch_status_banner(),
@@ -706,7 +588,7 @@ def build_dashboard_body(df):
                 children=[
                     html.H2("Melhores no Metacritic", className="section-title"),
                     html.P(
-                        "Top 4 por nota · capa Steam · downloads, receita e gênero estimados.",
+                        "Top 4 por nota · capa Steam · vendas, receita e gênero estimados.",
                         className="section-desc",
                     ),
                     top_metacritic_gallery(df, n=4),
@@ -727,35 +609,11 @@ def build_dashboard_body(df):
                         className="charts-2",
                         children=[
                             dcc.Graph(
-                                figure=chart_top_downloads(df),
+                                figure=chart_top_sales(df),
                                 config=graph_cfg,
                             ),
                             dcc.Graph(
                                 figure=chart_top_income(df),
-                                config=graph_cfg,
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-            html.Section(
-                className="section",
-                children=[
-                    html.H2("Incerteza das estimativas", className="section-title"),
-                    html.P(
-                        "Faixa pessimista / otimista no Top 10 e no total do catálogo "
-                        "(não exibe jogo a jogo).",
-                        className="section-desc",
-                    ),
-                    html.Div(
-                        className="charts-2",
-                        children=[
-                            dcc.Graph(
-                                figure=chart_top_downloads_scenario(df),
-                                config=graph_cfg,
-                            ),
-                            dcc.Graph(
-                                figure=chart_catalog_scenario_totals(df),
                                 config=graph_cfg,
                             ),
                         ],
@@ -770,7 +628,7 @@ def build_dashboard_body(df):
                         className="charts-2",
                         children=[
                             dcc.Graph(
-                                figure=chart_download_tiers(df),
+                                figure=chart_sales_tiers(df),
                                 config=graph_cfg,
                             ),
                             dcc.Graph(
@@ -847,7 +705,30 @@ app.index_string = """
                 max-width: 1400px;
                 margin: 0 auto;
             }
-            .exec-header { margin-bottom: 24px; }
+            .exec-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 20px;
+                flex-wrap: wrap;
+                margin-bottom: 24px;
+            }
+            .dashboard-nav { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+            .dashboard-nav-link {
+                color: #c7d5e0;
+                font-size: 0.85rem;
+                font-weight: 600;
+                padding: 8px 14px;
+                border: 1px solid #3d5a73;
+                border-radius: 999px;
+                background: rgba(42, 71, 94, 0.5);
+            }
+            .dashboard-nav-link:hover { border-color: #66c0f4; color: #fff; }
+            .dashboard-nav-link.is-active {
+                background: rgba(102, 192, 244, 0.18);
+                border-color: #66c0f4;
+                color: #66c0f4;
+            }
             .eyebrow {
                 color: #66c0f4;
                 font-size: 0.75rem;
